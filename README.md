@@ -38,14 +38,16 @@ gh extension install .
 ## Development
 
 ```bash
-make check   # format check, lint, test (CI-safe)
-make all     # format, fix, test, build
-make build   # produce ./gh-actionpins
+make check          # check-format + lint + test + build (CI-safe)
+make all            # format + fix + test + build
+make build          # produce ./gh-actionpins
 make test
 make lint
+make release-check  # cross-compile release platforms
+make help           # list common targets
 ```
 
-CI runs the same `make check` and `make build` targets. Workflow actions are **SHA-pinned** with version comments (dogfooding the pin style this tool will manage).
+CI runs `make check` (same gate as local). Workflow actions are **SHA-pinned** with version comments (dogfooding the pin style this tool will manage).
 
 ## Roadmap
 

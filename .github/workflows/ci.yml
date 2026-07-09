@@ -30,8 +30,6 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # make check = check-format + lint + test + build (no mutation)
       - name: Check
         run: make check
-
-      - name: Build
-        run: make build

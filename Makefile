@@ -5,32 +5,61 @@ BINARY  := gh-actionpins
 MODULE  := github.com/jaeyeom/gh-actionpins
 GOFLAGS ?=
 PKG     := ./...
+CMD     := ./cmd/gh-actionpins
+
+GOLANGCI_CONFIG_HASH_FILE := .tmp/golangci.yml.hash
 
 # ── Aggregate targets ───────────────────────────────────────────────
 
-.PHONY: all check
+.PHONY: all check help
 
 ## all: full local workflow (format, lint-fix, test, build)
 all: format fix test build
 
 ## check: CI-safe checks (no mutation)
-check: check-format lint test
+check: check-format lint test build
+
+## help: list common targets
+help:
+	@echo "Common targets:"
+	@echo "  all            format + fix + test + build"
+	@echo "  check          check-format + lint + test + build (CI-safe)"
+	@echo "  build          compile ./$(BINARY)"
+	@echo "  test           go test $(PKG)"
+	@echo "  lint           vet + golangci-lint"
+	@echo "  format         gofmt -w"
+	@echo "  fix            format + vet + golangci --fix"
+	@echo "  release-check  cross-compile release platforms"
+	@echo "  coverage       write coverage.out"
 
 # ── Build ───────────────────────────────────────────────────────────
 
-.PHONY: build clean install
+.PHONY: build clean install release-check
 
 ## build: compile the CLI binary (local development only)
 build:
-	go build $(GOFLAGS) -o $(BINARY) ./cmd/gh-actionpins
+	go build $(GOFLAGS) -o $(BINARY) $(CMD)
 
 ## install: install the binary into GOPATH/bin
 install:
-	go install $(GOFLAGS) ./cmd/gh-actionpins
+	go install $(GOFLAGS) $(CMD)
+
+## release-check: cross-compile for all release platforms to verify release readiness
+release-check:
+	@echo "Verifying cross-compilation for all release platforms..."
+	@for platform in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64; do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		output="dist/$(BINARY)-$${os}-$${arch}"; \
+		if [ "$$os" = "windows" ]; then output="$${output}.exe"; fi; \
+		echo "  Building $${os}/$${arch}..."; \
+		GOOS=$$os GOARCH=$$arch go build $(GOFLAGS) -o "$$output" $(CMD) || exit 1; \
+	done
+	@echo "All platforms built successfully in dist/"
 
 ## clean: remove build artifacts and coverage files
 clean:
-	rm -rf $(BINARY) dist coverage.out coverage.html
+	rm -rf $(BINARY) dist coverage.out coverage.html .tmp
 
 # ── Format ──────────────────────────────────────────────────────────
 
@@ -46,25 +75,36 @@ check-format:
 
 # ── Lint / Fix ──────────────────────────────────────────────────────
 
-.PHONY: lint fix vet lint-golangci fix-golangci
+.PHONY: lint fix vet lint-golangci fix-golangci verify-golangci-config
 
 ## lint: run go vet and golangci-lint
 lint: vet lint-golangci
 
+# fix depends on format so both don't mutate files concurrently under make -j.
 ## fix: format, vet, and golangci-lint auto-fix
-fix: format vet fix-golangci
+fix: format
+fix: vet fix-golangci
 
 ## vet: run go vet on all packages
 vet:
 	go vet $(PKG)
 
 ## lint-golangci: run golangci-lint
-lint-golangci:
+lint-golangci: verify-golangci-config
 	golangci-lint run $(PKG)
 
 ## fix-golangci: run golangci-lint with auto-fix
-fix-golangci:
+fix-golangci: verify-golangci-config
 	golangci-lint run --fix $(PKG)
+
+## verify-golangci-config: validate .golangci.yml (cached by content hash)
+verify-golangci-config:
+	@CURRENT_HASH=$$(shasum -a 256 .golangci.yml | cut -d' ' -f1); \
+	mkdir -p .tmp; \
+	if [ ! -f $(GOLANGCI_CONFIG_HASH_FILE) ] || [ "$$(cat $(GOLANGCI_CONFIG_HASH_FILE))" != "$$CURRENT_HASH" ]; then \
+		echo "Verifying golangci-lint config..."; \
+		golangci-lint config verify && echo "$$CURRENT_HASH" > $(GOLANGCI_CONFIG_HASH_FILE); \
+	fi
 
 # ── Test ────────────────────────────────────────────────────────────
 
@@ -78,7 +118,7 @@ test:
 coverage:
 	go test -coverprofile=coverage.out $(PKG)
 
-## coverage-html: open HTML coverage report
+## coverage-html: write HTML coverage report
 coverage-html: coverage
 	go tool cover -html=coverage.out -o coverage.html
 
@@ -94,7 +134,7 @@ clean-coverage:
 
 .PHONY: tidy verify
 
-## tidy: tidy and verify go.mod / go.sum
+## tidy: tidy go.mod / go.sum
 tidy:
 	go mod tidy
 

@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** scaffold only. Commands beyond help land in follow-up issues ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** foundation in progress. Catalog load/validate is available; scan/diff/apply land in follow-up issues ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
 
 ## Installation
 
@@ -34,6 +34,34 @@ make install
 # Load a local checkout as a gh extension (development)
 gh extension install .
 ```
+
+## Catalog
+
+The trusted pin catalog is YAML. Default path: `~/.config/actionpins/catalog.yaml` (OS user config directory).
+
+```bash
+# Validate the default catalog path
+gh actionpins catalog validate
+
+# Validate a specific file (example shipped in-repo)
+gh actionpins catalog validate --catalog examples/catalog.yaml
+```
+
+Example shape (see [`examples/catalog.yaml`](examples/catalog.yaml)):
+
+```yaml
+actions:
+  actions/checkout:
+    version: v7.0.0
+    sha: 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+    approved_at: 2026-06-01
+policy:
+  min_age: 7d
+  prefer: major          # major | same-major | patch-only
+  require_comment: true
+```
+
+Invalid catalogs fail with clear errors (missing `version`/`sha`, non-40-char hex SHA, bad `min_age` duration, etc.).
 
 ## Development
 

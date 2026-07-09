@@ -6,8 +6,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
+
+	"github.com/jaeyeom/gh-actionpins/internal/catalog"
 )
 
 const usage = `gh-actionpins manages trusted GitHub Actions pins.
@@ -20,7 +24,8 @@ Usage:
   gh actionpins <command> [flags]
 
 Commands:
-  help    Show this help
+  catalog validate    Validate a catalog YAML file
+  help                Show this help
 
 Flags:
   -h, --help    Show this help
@@ -28,25 +33,86 @@ Flags:
 Future commands (see repo issues):
   scan, diff, apply, check-updates, propose-bump, approve-bump
 
+Catalog:
+  Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
+  Example:      examples/catalog.yaml
+
 Examples:
   gh actionpins --help
+  gh actionpins catalog validate
+  gh actionpins catalog validate --catalog examples/catalog.yaml
 `
 
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprint(os.Stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return 0
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
-		_, _ = fmt.Fprint(os.Stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		return 0
+	case "catalog":
+		return runCatalog(args[1:], stdout, stderr)
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", args[0], usage)
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
 	}
+}
+
+func runCatalog(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprint(stderr, `usage: gh actionpins catalog <subcommand>
+
+Subcommands:
+  validate    Load and validate a catalog YAML file
+`)
+		return 1
+	}
+	switch args[0] {
+	case "validate":
+		return runCatalogValidate(args[1:], stdout, stderr)
+	case "help", "-h", "--help":
+		_, _ = fmt.Fprint(stdout, `usage: gh actionpins catalog <subcommand>
+
+Subcommands:
+  validate    Load and validate a catalog YAML file
+`)
+		return 0
+	default:
+		_, _ = fmt.Fprintf(stderr, "unknown catalog subcommand %q\n", args[0])
+		return 1
+	}
+}
+
+func runCatalogValidate(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("catalog validate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	path := *catalogPath
+	if path == "" {
+		var err error
+		path, err = catalog.DefaultPath()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	c, err := catalog.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	_, _ = fmt.Fprintf(stdout, "catalog OK: %s (%d actions)\n", path, len(c.Actions))
+	return 0
 }

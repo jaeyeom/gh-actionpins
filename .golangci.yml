@@ -59,6 +59,7 @@ linters:
           allow:
             - $gostd
             - "github.com/jaeyeom/gh-actionpins"
+            - "gopkg.in/yaml.v3"
           deny:
             - pkg: "github.com/sirupsen/logrus"
               desc: use log/slog instead

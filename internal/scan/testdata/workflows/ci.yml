@@ -1,0 +1,17 @@
+name: CI
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: local composite
+        uses: ./actions/local-build
+      - name: docker step
+        uses: docker://alpine:3.19
+      - uses: golangci/golangci-lint-action@v9.3.0

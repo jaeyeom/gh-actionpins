@@ -85,3 +85,56 @@ func TestRunCatalogUnknownSubcommand(t *testing.T) {
 		t.Errorf("code = %d, want 1", code)
 	}
 }
+
+func TestRunScan(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	wf := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./local
+      - uses: docker://alpine:3
+`
+	if err := os.WriteFile(filepath.Join(wf, "ci.yml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("scan = %d, stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "actions/checkout") {
+		t.Errorf("stdout missing checkout: %q", out)
+	}
+	if strings.Contains(out, "./local") || strings.Contains(out, "docker://") {
+		t.Errorf("stdout should skip local/docker: %q", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	// Flags before the optional path (standard flag package).
+	code = run([]string{"scan", "--format", "json", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("scan json = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"action": "actions/checkout"`) {
+		t.Errorf("json stdout = %q", stdout.String())
+	}
+}
+
+func TestRunScanTooManyArgs(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"scan", "a", "b"}, &stdout, &stderr); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+}

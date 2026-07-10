@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/jaeyeom/gh-actionpins/internal/catalog"
+	"github.com/jaeyeom/gh-actionpins/internal/scan"
 )
 
 const usage = `gh-actionpins manages trusted GitHub Actions pins.
@@ -25,22 +26,31 @@ Usage:
 
 Commands:
   catalog validate    Validate a catalog YAML file
+  scan [path]         List action uses: from local workflows
   help                Show this help
 
 Flags:
   -h, --help    Show this help
 
 Future commands (see repo issues):
-  scan, diff, apply, check-updates, propose-bump, approve-bump
+  diff, apply, check-updates, propose-bump, approve-bump
 
 Catalog:
   Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
   Example:      examples/catalog.yaml
 
+Scan:
+  Walks .github/workflows/** for owner/name@ref (and owner/name/path@ref).
+  Local (./...) and Docker (docker://...) uses are skipped.
+  Output: table (default) or JSON (--format).
+
 Examples:
   gh actionpins --help
   gh actionpins catalog validate
   gh actionpins catalog validate --catalog examples/catalog.yaml
+  gh actionpins scan
+  gh actionpins scan --format json
+  gh actionpins scan --format json /path/to/repo
 `
 
 func main() {
@@ -58,10 +68,43 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "catalog":
 		return runCatalog(args[1:], stdout, stderr)
+	case "scan":
+		return runScan(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
 	}
+}
+
+func runScan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	format := fs.String("format", scan.FormatTable, "output format: table or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	root := "."
+	switch fs.NArg() {
+	case 0:
+		// default: current directory
+	case 1:
+		root = fs.Arg(0)
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins scan [path] [--format table|json]")
+		return 2
+	}
+
+	result, err := scan.Scan(root)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := scan.Write(stdout, result, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runCatalog(args []string, stdout, stderr io.Writer) int {

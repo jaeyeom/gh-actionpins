@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** foundation in progress. Catalog load/validate is available; scan/diff/apply land in follow-up issues ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** foundation in progress. Catalog load/validate and local `scan` are available; diff/apply land in follow-up issues ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
 
 ## Installation
 
@@ -62,6 +62,33 @@ policy:
 ```
 
 Invalid catalogs fail with clear errors (missing `version`/`sha`, non-40-char hex SHA, bad `min_age` duration, etc.).
+
+## Scan
+
+Inventory GitHub Actions references from a local checkout by parsing workflow `uses:` lines.
+
+```bash
+# Scan the current repository (walks .github/workflows/**)
+gh actionpins scan
+
+# Scan another path
+gh actionpins scan /path/to/repo
+
+# Machine-readable output (flags before optional path)
+gh actionpins scan --format json
+gh actionpins scan --format json /path/to/repo
+```
+
+| Format | Description |
+|--------|-------------|
+| `table` (default) | Columns: `FILE`, `LINE`, `ACTION`, `REF` — stable order for humans and scripts |
+| `json` | `{ "root", "findings": [ { file, line, action, ref, uses } ] }` |
+
+**Included:** `owner/name@ref` and `owner/name/path@ref` (including reusable workflows).
+
+**Skipped (v1):** local actions (`./...`, `../...`) and Docker images (`docker://...`). Only `.github/workflows/**` `*.yml` / `*.yaml` files are walked (composite actions under `.github/actions` are out of scope for scan v1).
+
+Output is deterministic for the same inputs (sorted by file, line, action, ref).
 
 ## Development
 

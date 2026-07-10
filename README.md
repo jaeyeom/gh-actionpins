@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** foundation in progress. Catalog load/validate and local `scan` are available; diff/apply land in follow-up issues ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** foundation in progress. Catalog load/validate, local `scan`, and `diff` are available; apply lands in a follow-up issue ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
 
 ## Installation
 
@@ -89,6 +89,39 @@ gh actionpins scan --format json /path/to/repo
 **Skipped (v1):** local actions (`./...`, `../...`) and Docker images (`docker://...`). Only `.github/workflows/**` `*.yml` / `*.yaml` files are walked (composite actions under `.github/actions` are out of scope for scan v1).
 
 Output is deterministic for the same inputs (sorted by file, line, action, ref).
+
+## Diff
+
+Compare discovered workflow refs against the trusted catalog and report drift.
+
+```bash
+# Diff the current repository against the default catalog
+gh actionpins diff
+
+# Explicit catalog + path
+gh actionpins diff --catalog examples/catalog.yaml
+gh actionpins diff --catalog examples/catalog.yaml /path/to/repo
+
+# Machine-readable output
+gh actionpins diff --format json --catalog examples/catalog.yaml
+```
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | Ref matches the catalog SHA (and `# version` comment when `policy.require_comment` is true) |
+| `mismatch` | Full SHA differs from the catalog, or SHA matches but version comment policy fails |
+| `unpinned` | Catalogued action still uses a floating tag/branch (not a 40-char commit SHA) |
+| `unknown` | Action is not present in the catalog |
+
+**Exit codes (CI-friendly):**
+
+| Code | Meaning |
+|------|---------|
+| `0` | No drift — every finding is `ok`, or there are no findings |
+| `1` | Drift present (`mismatch`, `unpinned`, or `unknown`), or catalog/scan failure |
+| `2` | Invalid usage or flags |
+
+Table output includes a final `summary: clean|drift  ok=… mismatch=… unpinned=… unknown=…` line. JSON includes `entries` and `summary` (with `drift` bool).
 
 ## Development
 

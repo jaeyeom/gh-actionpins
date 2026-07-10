@@ -138,3 +138,90 @@ func TestRunScanTooManyArgs(t *testing.T) {
 		t.Errorf("code = %d, want 2", code)
 	}
 }
+
+func TestRunDiff(t *testing.T) {
+	t.Parallel()
+	example := filepath.Join("..", "..", "examples", "catalog.yaml")
+	if _, err := os.Stat(example); err != nil {
+		t.Fatalf("example catalog missing: %v", err)
+	}
+
+	dir := t.TempDir()
+	wf := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Match example catalog SHA for checkout (with comment; catalog has require_comment: true).
+	content := `
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@v5
+      - uses: not/in-catalog@v1
+`
+	if err := os.WriteFile(filepath.Join(wf, "ci.yml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"diff", "--catalog", example, dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("diff with drift = %d, want 1; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "ok") || !strings.Contains(out, "unpinned") || !strings.Contains(out, "unknown") {
+		t.Errorf("stdout missing statuses: %q", out)
+	}
+	if !strings.Contains(out, "summary: drift") {
+		t.Errorf("stdout missing drift summary: %q", out)
+	}
+
+	// Clean repo: only ok pins.
+	cleanDir := t.TempDir()
+	cleanWF := filepath.Join(cleanDir, ".github", "workflows")
+	if err := os.MkdirAll(cleanWF, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clean := `
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+`
+	if err := os.WriteFile(filepath.Join(cleanWF, "ci.yml"), []byte(clean), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"diff", "--catalog", example, "--format", "json", cleanDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("clean diff = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"drift": false`) {
+		t.Errorf("json want drift false: %q", stdout.String())
+	}
+}
+
+func TestRunDiffTooManyArgs(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"diff", "a", "b"}, &stdout, &stderr); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+}
+
+func TestRunDiffMissingCatalog(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"diff", "--catalog", filepath.Join(t.TempDir(), "nope.yaml"), t.TempDir()}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "error:") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}

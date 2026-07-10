@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/jaeyeom/gh-actionpins/internal/catalog"
+	"github.com/jaeyeom/gh-actionpins/internal/diff"
 	"github.com/jaeyeom/gh-actionpins/internal/scan"
 )
 
@@ -27,13 +28,14 @@ Usage:
 Commands:
   catalog validate    Validate a catalog YAML file
   scan [path]         List action uses: from local workflows
+  diff [path]         Compare workflow refs to the trusted catalog
   help                Show this help
 
 Flags:
   -h, --help    Show this help
 
 Future commands (see repo issues):
-  diff, apply, check-updates, propose-bump, approve-bump
+  apply, check-updates, propose-bump, approve-bump
 
 Catalog:
   Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
@@ -44,6 +46,16 @@ Scan:
   Local (./...) and Docker (docker://...) uses are skipped.
   Output: table (default) or JSON (--format).
 
+Diff:
+  Loads the catalog, scans [path] (default: .), classifies each uses: as
+  ok | mismatch | unpinned | unknown. policy.require_comment is enforced
+  when set in the catalog.
+  Exit codes:
+    0  no drift (every finding is ok, or no findings)
+    1  drift present, or catalog/scan failure
+    2  invalid usage/flags
+  Output: table (default) or JSON (--format).
+
 Examples:
   gh actionpins --help
   gh actionpins catalog validate
@@ -51,6 +63,9 @@ Examples:
   gh actionpins scan
   gh actionpins scan --format json
   gh actionpins scan --format json /path/to/repo
+  gh actionpins diff
+  gh actionpins diff --catalog examples/catalog.yaml
+  gh actionpins diff --format json /path/to/repo
 `
 
 func main() {
@@ -70,6 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCatalog(args[1:], stdout, stderr)
 	case "scan":
 		return runScan(args[1:], stdout, stderr)
+	case "diff":
+		return runDiff(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
@@ -102,6 +119,63 @@ func runScan(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := scan.Write(stdout, result, *format); err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runDiff(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	format := fs.String("format", diff.FormatTable, "output format: table or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	root := "."
+	switch fs.NArg() {
+	case 0:
+		// default: current directory
+	case 1:
+		root = fs.Arg(0)
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins diff [path] [--catalog path] [--format table|json]")
+		return 2
+	}
+
+	path := *catalogPath
+	if path == "" {
+		var err error
+		path, err = catalog.DefaultPath()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	scanResult, err := scan.Scan(root)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	result, err := diff.Compare(cat, scanResult, diff.Options{CatalogPath: path})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := diff.Write(stdout, result, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if result.HasDrift() {
 		return 1
 	}
 	return 0

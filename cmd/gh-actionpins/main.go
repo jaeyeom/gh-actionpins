@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/jaeyeom/gh-actionpins/internal/apply"
 	"github.com/jaeyeom/gh-actionpins/internal/catalog"
 	"github.com/jaeyeom/gh-actionpins/internal/diff"
 	"github.com/jaeyeom/gh-actionpins/internal/scan"
@@ -29,13 +30,14 @@ Commands:
   catalog validate    Validate a catalog YAML file
   scan [path]         List action uses: from local workflows
   diff [path]         Compare workflow refs to the trusted catalog
+  apply [path]        Rewrite uses: to catalog SHA + version comment
   help                Show this help
 
 Flags:
   -h, --help    Show this help
 
 Future commands (see repo issues):
-  apply, check-updates, propose-bump, approve-bump
+  check-updates, propose-bump, approve-bump
 
 Catalog:
   Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
@@ -56,6 +58,14 @@ Diff:
     2  invalid usage/flags
   Output: table (default) or JSON (--format).
 
+Apply:
+  Rewrites mismatched/unpinned catalogued actions to:
+    owner/action@<sha> # <version>   (when policy.require_comment)
+    owner/action@<sha>               (when require_comment is false)
+  Unknown, local, and Docker uses are left unchanged (reported as skipped).
+  Local file updates only; use --dry-run to preview without writing.
+  Output: table (default) or JSON (--format).
+
 Examples:
   gh actionpins --help
   gh actionpins catalog validate
@@ -66,6 +76,9 @@ Examples:
   gh actionpins diff
   gh actionpins diff --catalog examples/catalog.yaml
   gh actionpins diff --format json /path/to/repo
+  gh actionpins apply --dry-run
+  gh actionpins apply --catalog examples/catalog.yaml
+  gh actionpins apply --dry-run --format json /path/to/repo
 `
 
 func main() {
@@ -87,6 +100,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runScan(args[1:], stdout, stderr)
 	case "diff":
 		return runDiff(args[1:], stdout, stderr)
+	case "apply":
+		return runApply(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
@@ -176,6 +191,58 @@ func runDiff(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if result.HasDrift() {
+		return 1
+	}
+	return 0
+}
+
+func runApply(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	format := fs.String("format", apply.FormatTable, "output format: table or json")
+	dryRun := fs.Bool("dry-run", false, "show planned changes without writing files")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	root := "."
+	switch fs.NArg() {
+	case 0:
+		// default: current directory
+	case 1:
+		root = fs.Arg(0)
+	default:
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins apply [path] [--catalog path] [--dry-run] [--format table|json]")
+		return 2
+	}
+
+	path := *catalogPath
+	if path == "" {
+		var err error
+		path, err = catalog.DefaultPath()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+	}
+
+	cat, err := catalog.Load(path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	result, err := apply.Run(cat, root, apply.Options{
+		CatalogPath: path,
+		DryRun:      *dryRun,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := apply.Write(stdout, result, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0

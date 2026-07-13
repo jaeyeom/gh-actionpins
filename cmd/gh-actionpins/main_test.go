@@ -225,3 +225,111 @@ func TestRunDiffMissingCatalog(t *testing.T) {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
+
+func TestRunApply(t *testing.T) {
+	t.Parallel()
+	example := filepath.Join("..", "..", "examples", "catalog.yaml")
+	if _, err := os.Stat(example); err != nil {
+		t.Fatalf("example catalog missing: %v", err)
+	}
+
+	dir, path, before := writeApplyFixture(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"apply", "--catalog", example, "--dry-run", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("apply dry-run = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "would apply") || !strings.Contains(out, "actions/checkout") {
+		t.Errorf("dry-run stdout = %q", out)
+	}
+	assertFileEquals(t, path, before)
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"apply", "--catalog", example, "--format", "json", dir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("apply = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"dryRun": false`) {
+		t.Errorf("json stdout = %q", stdout.String())
+	}
+	assertFileContains(t, path, []string{
+		"actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
+		"actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0",
+		"uses: not/in-catalog@v1",
+		"uses: ./local",
+		"uses: docker://alpine:3",
+	})
+}
+
+func writeApplyFixture(t *testing.T) (dir, path, before string) {
+	t.Helper()
+	dir = t.TempDir()
+	wf := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before = `
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+      - uses: not/in-catalog@v1
+      - uses: ./local
+      - uses: docker://alpine:3
+`
+	path = filepath.Join(wf, "ci.yml")
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir, path, before
+}
+
+func assertFileEquals(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != want {
+		t.Errorf("file content mismatch")
+	}
+}
+
+func assertFileContains(t *testing.T, path string, needles []string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := string(data)
+	for _, n := range needles {
+		if !strings.Contains(after, n) {
+			t.Errorf("missing %q in:\n%s", n, after)
+		}
+	}
+}
+
+func TestRunApplyTooManyArgs(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"apply", "a", "b"}, &stdout, &stderr); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+}
+
+func TestRunApplyMissingCatalog(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "--catalog", filepath.Join(t.TempDir(), "nope.yaml"), t.TempDir()}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "error:") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}

@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** foundation in progress. Catalog load/validate, local `scan`, and `diff` are available; apply lands in a follow-up issue ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** core pin loop is available: catalog load/validate, local `scan`, `diff`, and `apply`. Fleet apply and controlled bumps are follow-ups ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
 
 ## Installation
 
@@ -122,6 +122,36 @@ gh actionpins diff --format json --catalog examples/catalog.yaml
 | `2` | Invalid usage or flags |
 
 Table output includes a final `summary: clean|drift  ok=… mismatch=… unpinned=… unknown=…` line. JSON includes `entries` and `summary` (with `drift` bool).
+
+## Apply
+
+Rewrite mismatched or unpinned **catalogued** workflow `uses:` lines to the trusted pin form. Unknown actions, local paths (`./…`), and Docker images (`docker://…`) are left unchanged.
+
+```bash
+# Preview rewrites without writing (recommended first)
+gh actionpins apply --dry-run
+gh actionpins apply --dry-run --catalog examples/catalog.yaml
+
+# Apply to the current repository
+gh actionpins apply --catalog examples/catalog.yaml
+
+# Another checkout + machine-readable plan
+gh actionpins apply --dry-run --format json /path/to/repo
+```
+
+| Target form | When |
+|-------------|------|
+| `owner/action@<sha> # <version>` | `policy.require_comment` is true (default style in the example catalog) |
+| `owner/action@<sha>` | `policy.require_comment` is false |
+
+**Behavior:**
+
+- Only actions present in the catalog with status `mismatch` or `unpinned` are rewritten
+- Already-correct pins (`ok`) and `unknown` actions are skipped (reported in the summary)
+- Line-oriented edits preserve surrounding YAML (indentation, step names, `with:` blocks)
+- Local files only — no force-push, no PR API (see roadmap)
+
+Table output lists `FILE`, `LINE`, `ACTION`, `OLD`, `NEW` and ends with `summary: applied|would apply N change(s); skipped unknown=… ok=…`.
 
 ## Development
 

@@ -40,8 +40,8 @@ type Action struct {
 	ApprovedAt string `yaml:"approved_at"`
 }
 
-// Policy holds bump/apply preferences. Fields are validated when set;
-// behavior for each field may be partial until bump/apply land.
+// Policy holds bump/apply preferences. Fields are validated when set.
+// require_comment is honored by diff and apply; min_age/prefer are for bumps.
 type Policy struct {
 	MinAge         string `yaml:"min_age"`
 	Prefer         string `yaml:"prefer"`

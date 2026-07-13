@@ -1,8 +1,12 @@
 # Example trusted action pin catalog for gh-actionpins.
 # Copy to ~/.config/actionpins/catalog.yaml (or pass --catalog) and edit.
 #
-# Validate: gh actionpins catalog validate
-#           gh actionpins catalog validate --catalog examples/catalog.yaml
+# Typical loop:
+#   gh actionpins catalog validate --catalog examples/catalog.yaml
+#   gh actionpins scan
+#   gh actionpins diff  --catalog examples/catalog.yaml
+#   gh actionpins apply --catalog examples/catalog.yaml --dry-run
+#   gh actionpins apply --catalog examples/catalog.yaml
 
 actions:
   actions/checkout:

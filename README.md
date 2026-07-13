@@ -63,6 +63,37 @@ policy:
 
 Invalid catalogs fail with clear errors (missing `version`/`sha`, non-40-char hex SHA, bad `min_age` duration, etc.).
 
+## Typical workflow
+
+Pin a local checkout against a trusted catalog:
+
+```bash
+# 1. Start from the example catalog (or your own)
+cp examples/catalog.yaml ~/.config/actionpins/catalog.yaml
+# edit versions/SHAs as needed, then:
+gh actionpins catalog validate
+
+# 2. Inventory what the repo uses
+gh actionpins scan
+
+# 3. See drift vs the catalog
+gh actionpins diff
+# exit 1 when mismatch/unpinned/unknown — useful in CI
+
+# 4. Preview, then apply local rewrites
+gh actionpins apply --dry-run
+gh actionpins apply
+# review the diff, commit, open a PR yourself
+```
+
+**Policy choices (document them for your fleet):**
+
+| Choice | Behavior |
+|--------|----------|
+| Unknown actions | Left unchanged; reported as `unknown` by `diff` and skipped by `apply` |
+| Local / Docker `uses:` | Never scanned or rewritten |
+| `policy.require_comment` | When true, `diff` requires `# version` and `apply` writes `owner/action@sha # version` |
+
 ## Scan
 
 Inventory GitHub Actions references from a local checkout by parsing workflow `uses:` lines.
@@ -165,8 +196,16 @@ make release-check  # cross-compile release platforms
 make help           # list common targets
 ```
 
-CI runs `make check` (same gate as local). Workflow actions are **SHA-pinned** with version comments (dogfooding the pin style this tool will manage).
+CI runs `make check` (same gate as local). Workflow actions are **SHA-pinned** with version comments (dogfooding the pin style this tool manages).
 
 ## Roadmap
 
-See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the MVP plan and child issues (`scan`, `diff`, `apply`, catalog, controlled bumps).
+See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the full MVP plan.
+
+| Area | Status |
+|------|--------|
+| Catalog load/validate | Done ([#3](https://github.com/jaeyeom/gh-actionpins/issues/3)) |
+| Local `scan` / `diff` / `apply` | Done ([#4](https://github.com/jaeyeom/gh-actionpins/issues/4)–[#6](https://github.com/jaeyeom/gh-actionpins/issues/6)) |
+| Managed repos + `apply --all` | Planned ([#7](https://github.com/jaeyeom/gh-actionpins/issues/7)) |
+| Controlled bumps (`check-updates` / propose / approve) | Planned ([#8](https://github.com/jaeyeom/gh-actionpins/issues/8)–[#9](https://github.com/jaeyeom/gh-actionpins/issues/9)) |
+| Apply via reviewable PR (`gh`) | Planned ([#10](https://github.com/jaeyeom/gh-actionpins/issues/10)) |

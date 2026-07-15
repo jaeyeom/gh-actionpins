@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/jaeyeom/gh-actionpins/internal/catalog"
 	"github.com/jaeyeom/gh-actionpins/internal/diff"
 	"github.com/jaeyeom/gh-actionpins/internal/scan"
+	"github.com/jaeyeom/gh-actionpins/internal/update"
 )
 
 const usage = `gh-actionpins manages trusted GitHub Actions pins.
@@ -29,17 +31,19 @@ Usage:
   gh actionpins <command> [flags]
 
 Commands:
-  catalog validate    Validate a catalog YAML file
-  scan [path]         List action uses: from local workflows
-  diff [path]         Compare workflow refs to the trusted catalog
-  apply [path]        Rewrite uses: to catalog SHA + version comment
-  help                Show this help
+  catalog validate       Validate a catalog YAML file
+  scan [path]            List action uses: from local workflows
+  diff [path]            Compare workflow refs to the trusted catalog
+  apply [path]           Rewrite uses: to catalog SHA + version comment
+  check-updates          Compare catalog pins to upstream releases
+  propose-bump <action>  Propose a catalog bump (no write; min_age gated)
+  help                   Show this help
 
 Flags:
   -h, --help    Show this help
 
 Future commands (see repo issues):
-  check-updates, propose-bump, approve-bump
+  approve-bump
 
 Catalog:
   Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
@@ -80,6 +84,23 @@ Apply:
   --all iterates catalog.repos (still discovery-based per repo).
   Output: table (default) or JSON (--format).
 
+Check-updates / propose-bump:
+  Discover newer upstream releases via the GitHub API (gh api; uses your
+  gh auth). Never auto-trusts "latest" or day-0 releases.
+  policy.min_age: soak time before a release is eligible to propose.
+  policy.prefer: major | same-major | patch-only (filters candidates).
+  propose-bump prints a reviewable proposal only — it does not write the
+  catalog (see approve-bump). Short action names resolve when unique
+  (e.g. checkout → actions/checkout).
+  Exit codes (check-updates):
+    0  no eligible updates (or only current/too-new/blocked)
+    1  at least one available update, or lookup/catalog failure
+    2  invalid usage/flags
+  Exit codes (propose-bump):
+    0  proposal printed
+    1  refused (too new / blocked / none) or failure
+    2  invalid usage/flags
+
 Examples:
   gh actionpins --help
   gh actionpins catalog validate
@@ -96,6 +117,10 @@ Examples:
   gh actionpins apply --catalog examples/catalog.yaml
   gh actionpins apply --dry-run --format json /path/to/repo
   gh actionpins apply --all --dry-run --catalog examples/catalog.yaml
+  gh actionpins check-updates --catalog examples/catalog.yaml
+  gh actionpins check-updates --format json
+  gh actionpins propose-bump actions/checkout
+  gh actionpins propose-bump --format json checkout
 `
 
 func main() {
@@ -119,6 +144,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDiff(args[1:], stdout, stderr)
 	case "apply":
 		return runApply(args[1:], stdout, stderr)
+	case "check-updates":
+		return runCheckUpdates(args[1:], stdout, stderr)
+	case "propose-bump":
+		return runProposeBump(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
@@ -503,6 +532,80 @@ func runApplyAll(catalogPath, format string, dryRun bool, stdout, stderr io.Writ
 		}
 	}
 	return exit
+}
+
+func runCheckUpdates(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("check-updates", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	format := fs.String("format", update.FormatTable, "output format: table or json")
+	includePrerelease := fs.Bool("include-prerelease", false, "include GitHub pre-releases and pre-release tags")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins check-updates [--catalog path] [--format table|json] [--include-prerelease]")
+		return 2
+	}
+
+	path, cat, code := loadCatalog(*catalogPath, stderr)
+	if code != 0 {
+		return code
+	}
+
+	result, err := update.CheckUpdates(context.Background(), cat, update.Options{
+		CatalogPath:       path,
+		IncludePrerelease: *includePrerelease,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := update.WriteCheck(stdout, result, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if result.Summary.Error > 0 {
+		return 1
+	}
+	if result.Summary.Updates {
+		return 1 // CI-friendly: non-zero when eligible bumps exist
+	}
+	return 0
+}
+
+func runProposeBump(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("propose-bump", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	format := fs.String("format", update.FormatTable, "output format: table or json")
+	includePrerelease := fs.Bool("include-prerelease", false, "include GitHub pre-releases and pre-release tags")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins propose-bump <action> [--catalog path] [--format table|json] [--include-prerelease]")
+		return 2
+	}
+
+	path, cat, code := loadCatalog(*catalogPath, stderr)
+	if code != 0 {
+		return code
+	}
+
+	proposal, err := update.ProposeBump(context.Background(), cat, fs.Arg(0), update.Options{
+		CatalogPath:       path,
+		IncludePrerelease: *includePrerelease,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := update.WriteProposal(stdout, proposal, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runCatalog(args []string, stdout, stderr io.Writer) int {

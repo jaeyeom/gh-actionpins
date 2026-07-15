@@ -549,3 +549,49 @@ func TestRunCatalogValidateWithRepos(t *testing.T) {
 		t.Errorf("stdout = %q, want 2 repos", stdout.String())
 	}
 }
+
+func TestRunCheckUpdatesUsage(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"check-updates", "extra"}, &stdout, &stderr); code != 2 {
+		t.Errorf("code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunProposeBumpUsage(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"propose-bump"}, &stdout, &stderr); code != 2 {
+		t.Errorf("code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "usage:") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunProposeBumpMissingCatalog(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	// Flags before the positional action (standard flag package).
+	code := run([]string{"propose-bump", "--catalog", filepath.Join(t.TempDir(), "nope.yaml"), "actions/checkout"}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("code = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "error:") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunHelpListsUpdateCommands(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code = %d", code)
+	}
+	out := stdout.String()
+	for _, needle := range []string{"check-updates", "propose-bump", "min_age"} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("help missing %q", needle)
+		}
+	}
+}

@@ -28,9 +28,37 @@ const (
 )
 
 // Catalog is the trusted pin registry loaded from YAML.
+//
+// Optional Repos lists managed local checkouts for fleet commands
+// (scan/diff/apply --all). Inventory remains discovery-based per repo:
+// unused catalog actions are never injected into a repo.
 type Catalog struct {
 	Actions map[string]Action `yaml:"actions"`
 	Policy  Policy            `yaml:"policy"`
+	// Repos is the managed fleet list (local paths). Optional.
+	Repos []Repo `yaml:"repos,omitempty"`
+}
+
+// Repo is one managed local checkout in the fleet.
+//
+// Path is required and points at a local working tree. Name is optional
+// owner/name identity used only for display (not for network access).
+type Repo struct {
+	// Name is an optional owner/name label (e.g. "jaeyeom/gh-actionpins").
+	Name string `yaml:"name,omitempty"`
+	// Path is the local filesystem path to the checkout (required).
+	// Supports leading "~/" for the user home directory.
+	Path string `yaml:"path"`
+}
+
+// ResolvedRepo is a validated managed repo with an absolute local path.
+type ResolvedRepo struct {
+	// Name is the optional owner/name identity (may be empty).
+	Name string
+	// Path is the absolute local path.
+	Path string
+	// Label is Name when set, otherwise Path (for human-readable headers).
+	Label string
 }
 
 // Action is one trusted pin entry (version tag + immutable commit SHA).
@@ -119,7 +147,74 @@ func (c *Catalog) Validate() error {
 	if err := c.Policy.validate(); err != nil {
 		errs = append(errs, err)
 	}
+	for i, r := range c.Repos {
+		if err := validateRepo(i, r); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// ResolveRepos expands and absolutizes managed repo paths.
+// Returns an error when the fleet list is empty (needed for --all).
+// Does not require paths to exist on disk; callers should check as needed.
+func (c *Catalog) ResolveRepos() ([]ResolvedRepo, error) {
+	if c == nil {
+		return nil, errors.New("catalog is nil")
+	}
+	if len(c.Repos) == 0 {
+		return nil, errors.New("repos: no managed repositories configured (add a repos: list to the catalog for --all)")
+	}
+	out := make([]ResolvedRepo, 0, len(c.Repos))
+	for i, r := range c.Repos {
+		if err := validateRepo(i, r); err != nil {
+			return nil, err
+		}
+		abs, err := ExpandPath(r.Path)
+		if err != nil {
+			return nil, fmt.Errorf("repos[%d]: path: %w", i, err)
+		}
+		name := strings.TrimSpace(r.Name)
+		label := name
+		if label == "" {
+			label = abs
+		}
+		out = append(out, ResolvedRepo{Name: name, Path: abs, Label: label})
+	}
+	return out, nil
+}
+
+// ExpandPath trims p, expands a leading "~/" (or bare "~") to the user home
+// directory, and returns an absolute path.
+func ExpandPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", errors.New("empty path")
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		if p == "~" {
+			p = home
+		} else {
+			// Drop "~/" or "~\"
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	return abs, nil
+}
+
+func validateRepo(i int, r Repo) error {
+	if strings.TrimSpace(r.Path) == "" {
+		return fmt.Errorf("repos[%d]: path is required", i)
+	}
+	return nil
 }
 
 func validateAction(name string, a Action) error {

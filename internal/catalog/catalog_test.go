@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,5 +250,121 @@ func TestValidateNilCatalog(t *testing.T) {
 	var c *Catalog
 	if err := c.Validate(); err == nil {
 		t.Fatal("nil Catalog.Validate() = nil, want error")
+	}
+}
+
+func TestParseRepos(t *testing.T) {
+	t.Parallel()
+	yaml := validYAML + `
+repos:
+  - path: /tmp/repo-a
+  - name: owner/repo-b
+    path: ~/src/repo-b
+`
+	c, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(c.Repos) != 2 {
+		t.Fatalf("len(Repos) = %d, want 2", len(c.Repos))
+	}
+	if c.Repos[0].Path != "/tmp/repo-a" || c.Repos[0].Name != "" {
+		t.Errorf("repos[0] = %+v", c.Repos[0])
+	}
+	if c.Repos[1].Name != "owner/repo-b" || c.Repos[1].Path != "~/src/repo-b" {
+		t.Errorf("repos[1] = %+v", c.Repos[1])
+	}
+}
+
+func TestReposValidationErrors(t *testing.T) {
+	t.Parallel()
+	_, err := Parse([]byte(`
+actions: {}
+repos:
+  - name: only-name
+`))
+	if err == nil {
+		t.Fatal("Parse() error = nil, want path required")
+	}
+	if !strings.Contains(err.Error(), "path is required") {
+		t.Errorf("error %q, want path is required", err.Error())
+	}
+}
+
+func TestResolveRepos(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, err := Parse([]byte(fmt.Sprintf(`
+actions: {}
+repos:
+  - path: %s
+  - name: acme/app
+    path: %s
+`, filepath.Join(dir, "a"), filepath.Join(dir, "b"))))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	got, err := c.ResolveRepos()
+	if err != nil {
+		t.Fatalf("ResolveRepos() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if !filepath.IsAbs(got[0].Path) {
+		t.Errorf("path not absolute: %q", got[0].Path)
+	}
+	if got[0].Label != got[0].Path {
+		t.Errorf("label without name = %q, want path", got[0].Label)
+	}
+	if got[1].Name != "acme/app" || got[1].Label != "acme/app" {
+		t.Errorf("repos[1] = %+v", got[1])
+	}
+}
+
+func TestResolveReposEmpty(t *testing.T) {
+	t.Parallel()
+	c, err := Parse([]byte("actions: {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.ResolveRepos()
+	if err == nil {
+		t.Fatal("ResolveRepos() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "no managed repositories") {
+		t.Errorf("error %q", err.Error())
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	t.Parallel()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ExpandPath("~/actionpins-test-path")
+	if err != nil {
+		t.Fatalf("ExpandPath(~/...) error = %v", err)
+	}
+	want := filepath.Join(home, "actionpins-test-path")
+	if got != want {
+		t.Errorf("ExpandPath(~/...) = %q, want %q", got, want)
+	}
+
+	got, err = ExpandPath("~")
+	if err != nil {
+		t.Fatalf("ExpandPath(~) error = %v", err)
+	}
+	if got != home {
+		// Abs may clean home; both should be absolute home.
+		if absHome, aerr := filepath.Abs(home); aerr == nil && got != absHome {
+			t.Errorf("ExpandPath(~) = %q, want %q", got, home)
+		}
+	}
+
+	if _, err := ExpandPath("  "); err == nil {
+		t.Error("ExpandPath(empty) = nil, want error")
 	}
 }

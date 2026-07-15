@@ -7,6 +7,11 @@
 #   gh actionpins diff  --catalog examples/catalog.yaml
 #   gh actionpins apply --catalog examples/catalog.yaml --dry-run
 #   gh actionpins apply --catalog examples/catalog.yaml
+#
+# Fleet (--all) uses the optional repos: list below:
+#   gh actionpins scan  --all --catalog ~/.config/actionpins/catalog.yaml
+#   gh actionpins diff  --all --catalog ~/.config/actionpins/catalog.yaml
+#   gh actionpins apply --all --dry-run --catalog ~/.config/actionpins/catalog.yaml
 
 actions:
   actions/checkout:
@@ -29,3 +34,15 @@ policy:
   prefer: major
   # Keep "# vX.Y.Z" annotations on uses: lines when applying pins.
   require_comment: true
+
+# Managed fleet for scan/diff/apply --all.
+# Model: each entry is a local checkout. path is required; name is optional
+# owner/name identity for display only (no remote access).
+# Inventory is discovery-based: a repo is only rewritten for actions it
+# already uses — unused catalog entries are never injected.
+#
+# Uncomment and set real paths to enable --all:
+# repos:
+#   - path: /absolute/path/to/repo-a
+#   - name: owner/repo-b
+#     path: ~/src/owner/repo-b

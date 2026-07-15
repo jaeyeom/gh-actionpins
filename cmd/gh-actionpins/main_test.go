@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,5 +332,220 @@ func TestRunApplyMissingCatalog(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "error:") {
 		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// writeFleetCatalog builds a catalog with two managed repos that use different
+// action subsets (discovery-based inventory; never force unused actions).
+func writeFleetCatalog(t *testing.T) (catalogPath, repoA, repoB string) {
+	t.Helper()
+	root := t.TempDir()
+	repoA = filepath.Join(root, "repo-a")
+	repoB = filepath.Join(root, "repo-b")
+	for _, dir := range []string{repoA, repoB} {
+		if err := os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// repo-a uses checkout only (floating tag).
+	aWF := `
+jobs:
+  j:
+    steps:
+      - uses: actions/checkout@v4
+`
+	if err := os.WriteFile(filepath.Join(repoA, ".github", "workflows", "ci.yml"), []byte(aWF), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// repo-b uses setup-go only — checkout must not be injected on apply.
+	bWF := `
+jobs:
+  j:
+    steps:
+      - uses: actions/setup-go@v5
+`
+	if err := os.WriteFile(filepath.Join(repoB, ".github", "workflows", "ci.yml"), []byte(bWF), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	catalogPath = filepath.Join(root, "catalog.yaml")
+	// Use forward-slash-safe YAML quoting for paths (Windows may use \).
+	content := fmt.Sprintf(`
+actions:
+  actions/checkout:
+    version: v7.0.0
+    sha: 9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+  actions/setup-go:
+    version: v6.5.0
+    sha: 924ae3a1cded613372ab5595356fb5720e22ba16
+policy:
+  require_comment: true
+repos:
+  - name: fleet/repo-a
+    path: %q
+  - name: fleet/repo-b
+    path: %q
+`, repoA, repoB)
+	if err := os.WriteFile(catalogPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return catalogPath, repoA, repoB
+}
+
+func TestRunScanAll(t *testing.T) {
+	t.Parallel()
+	catalogPath, _, _ := writeFleetCatalog(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--all", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("scan --all = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "=== fleet/repo-a") || !strings.Contains(out, "=== fleet/repo-b") {
+		t.Errorf("missing repo headers: %q", out)
+	}
+	if !strings.Contains(out, "actions/checkout") || !strings.Contains(out, "actions/setup-go") {
+		t.Errorf("missing findings: %q", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"scan", "--all", "--format", "json", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("scan --all json = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"name": "fleet/repo-a"`) {
+		t.Errorf("json stdout = %q", stdout.String())
+	}
+}
+
+func TestRunDiffAll(t *testing.T) {
+	t.Parallel()
+	catalogPath, _, _ := writeFleetCatalog(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"diff", "--all", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("diff --all with drift = %d, want 1; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "unpinned") {
+		t.Errorf("want unpinned drift: %q", out)
+	}
+	if !strings.Contains(out, "fleet/repo-a") || !strings.Contains(out, "fleet/repo-b") {
+		t.Errorf("missing repo headers: %q", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"diff", "--all", "--format", "json", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("diff --all json = %d, want 1", code)
+	}
+	if !strings.Contains(stdout.String(), `"drift": true`) {
+		t.Errorf("json want drift true: %q", stdout.String())
+	}
+}
+
+func TestRunApplyAllDiscoveryBased(t *testing.T) {
+	t.Parallel()
+	catalogPath, repoA, repoB := writeFleetCatalog(t)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "--all", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("apply --all = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "fleet/repo-a") || !strings.Contains(out, "fleet/repo-b") {
+		t.Errorf("missing repo headers: %q", out)
+	}
+
+	// repo-a should pin checkout only; never gain setup-go.
+	aPath := filepath.Join(repoA, ".github", "workflows", "ci.yml")
+	assertFileContains(t, aPath, []string{
+		"actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
+	})
+	aData, err := os.ReadFile(aPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(aData), "setup-go") {
+		t.Errorf("repo-a must not inject unused setup-go:\n%s", aData)
+	}
+
+	// repo-b should pin setup-go only; never gain checkout.
+	bPath := filepath.Join(repoB, ".github", "workflows", "ci.yml")
+	assertFileContains(t, bPath, []string{
+		"actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0",
+	})
+	bData, err := os.ReadFile(bPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(bData), "checkout") {
+		t.Errorf("repo-b must not inject unused checkout:\n%s", bData)
+	}
+}
+
+func TestRunApplyAllDryRun(t *testing.T) {
+	t.Parallel()
+	catalogPath, repoA, _ := writeFleetCatalog(t)
+	aPath := filepath.Join(repoA, ".github", "workflows", "ci.yml")
+	before, err := os.ReadFile(aPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "--all", "--dry-run", "--format", "json", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("apply --all dry-run = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"dryRun": true`) {
+		t.Errorf("json = %q", stdout.String())
+	}
+	assertFileEquals(t, aPath, string(before))
+}
+
+func TestRunAllRejectsPathArg(t *testing.T) {
+	t.Parallel()
+	for _, cmd := range []string{"scan", "diff", "apply"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{cmd, "--all", "/some/path"}, &stdout, &stderr)
+		if code != 2 {
+			t.Errorf("%s --all with path = %d, want 2; stderr=%q", cmd, code, stderr.String())
+		}
+	}
+}
+
+func TestRunAllEmptyRepos(t *testing.T) {
+	t.Parallel()
+	// Example catalog has no repos: list (commented out).
+	example := filepath.Join("..", "..", "examples", "catalog.yaml")
+	if _, err := os.Stat(example); err != nil {
+		t.Fatalf("example catalog missing: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--all", "--catalog", example}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("scan --all empty repos = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no managed repositories") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunCatalogValidateWithRepos(t *testing.T) {
+	t.Parallel()
+	catalogPath, _, _ := writeFleetCatalog(t)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"catalog", "validate", "--catalog", catalogPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("validate = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "2 repos") {
+		t.Errorf("stdout = %q, want 2 repos", stdout.String())
 	}
 }

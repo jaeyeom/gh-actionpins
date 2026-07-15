@@ -18,6 +18,7 @@ import (
 	"github.com/jaeyeom/gh-actionpins/internal/catalog"
 	"github.com/jaeyeom/gh-actionpins/internal/diff"
 	"github.com/jaeyeom/gh-actionpins/internal/scan"
+	"github.com/jaeyeom/gh-actionpins/internal/transport"
 	"github.com/jaeyeom/gh-actionpins/internal/update"
 )
 
@@ -78,7 +79,16 @@ Apply:
     owner/action@<sha> # <version>   (when policy.require_comment)
     owner/action@<sha>               (when require_comment is false)
   Unknown, local, and Docker uses are left unchanged (reported as skipped).
-  Local file updates only; use --dry-run to preview without writing.
+  Default: local file updates only; use --dry-run to preview without writing.
+  Transport (optional, mutually exclusive):
+    --commit  local git commit of rewritten files only (no push)
+    --pr      side branch + commit + push + gh pr create (never force-push;
+              never updates the default branch directly)
+  Conventions:
+    branch  actionpins/apply-YYYYMMDD-HHMMSS (UTC)
+    commit  chore: pin GitHub Actions to trusted catalog SHAs
+  --pr fails safely if gh auth or repo context is missing.
+  Prefer a clean checkout of the default branch before --pr.
   --all iterates catalog.repos (still discovery-based per repo).
   Output: table (default) or JSON (--format).
 
@@ -123,8 +133,12 @@ Examples:
   gh actionpins diff --all --catalog examples/catalog.yaml
   gh actionpins apply --dry-run
   gh actionpins apply --catalog examples/catalog.yaml
+  gh actionpins apply --commit --catalog examples/catalog.yaml
+  gh actionpins apply --pr --catalog examples/catalog.yaml
+  gh actionpins apply --dry-run --pr --catalog examples/catalog.yaml
   gh actionpins apply --dry-run --format json /path/to/repo
   gh actionpins apply --all --dry-run --catalog examples/catalog.yaml
+  gh actionpins apply --all --pr --catalog examples/catalog.yaml
   gh actionpins check-updates --catalog examples/catalog.yaml
   gh actionpins check-updates --format json
   gh actionpins propose-bump actions/checkout
@@ -425,16 +439,23 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	format := fs.String("format", apply.FormatTable, "output format: table or json")
 	dryRun := fs.Bool("dry-run", false, "show planned changes without writing files")
 	all := fs.Bool("all", false, "apply to every repo listed in catalog.repos")
+	doPR := fs.Bool("pr", false, "after apply, open a reviewable PR via gh (side branch; never force-push)")
+	doCommit := fs.Bool("commit", false, "after apply, create a local git commit only (no push/PR)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
+	mode, code := resolveTransportMode(*doPR, *doCommit, stderr)
+	if code != 0 {
+		return code
+	}
+
 	if *all {
 		if fs.NArg() != 0 {
-			_, _ = fmt.Fprintln(stderr, "usage: gh actionpins apply --all [--catalog path] [--dry-run] [--format table|json]")
+			_, _ = fmt.Fprintln(stderr, "usage: gh actionpins apply --all [--catalog path] [--dry-run] [--pr|--commit] [--format table|json]")
 			return 2
 		}
-		return runApplyAll(*catalogPath, *format, *dryRun, stdout, stderr)
+		return runApplyAll(*catalogPath, *format, *dryRun, mode, stdout, stderr)
 	}
 
 	root := "."
@@ -444,7 +465,7 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 	case 1:
 		root = fs.Arg(0)
 	default:
-		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins apply [path] [--catalog path] [--dry-run] [--format table|json]")
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins apply [path] [--catalog path] [--dry-run] [--pr|--commit] [--format table|json]")
 		return 2
 	}
 
@@ -461,14 +482,49 @@ func runApply(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if err := apply.Write(stdout, result, *format); err != nil {
+
+	var tr *transport.Result
+	if mode != transport.ModeNone {
+		tr, err = transport.Deliver(context.Background(), transport.Options{
+			Mode:        mode,
+			Root:        result.Root,
+			Changes:     result.Changes,
+			CatalogPath: path,
+			DryRun:      *dryRun,
+		})
+		if err != nil {
+			// Still print apply output so operators see what was rewritten.
+			_ = writeApplyWithTransport(stdout, result, tr, *format)
+			_, _ = fmt.Fprintf(stderr, "error: transport: %v\n", err)
+			return 1
+		}
+	}
+
+	if err := writeApplyWithTransport(stdout, result, tr, *format); err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
-func runApplyAll(catalogPath, format string, dryRun bool, stdout, stderr io.Writer) int {
+type repoApplyJSON struct {
+	Name      string            `json:"name,omitempty"`
+	Path      string            `json:"path"`
+	Root      string            `json:"root,omitempty"`
+	DryRun    bool              `json:"dryRun"`
+	Changes   []apply.Change    `json:"changes,omitempty"`
+	Skipped   []apply.Skip      `json:"skipped,omitempty"`
+	Transport *transport.Result `json:"transport,omitempty"`
+	Error     string            `json:"error,omitempty"`
+}
+
+type multiApplyJSON struct {
+	CatalogPath string          `json:"catalogPath,omitempty"`
+	DryRun      bool            `json:"dryRun"`
+	Repos       []repoApplyJSON `json:"repos"`
+}
+
+func runApplyAll(catalogPath, format string, dryRun bool, mode transport.Mode, stdout, stderr io.Writer) int {
 	path, cat, code := loadCatalog(catalogPath, stderr)
 	if code != 0 {
 		return code
@@ -479,61 +535,17 @@ func runApplyAll(catalogPath, format string, dryRun bool, stdout, stderr io.Writ
 		return 1
 	}
 
-	type repoApply struct {
-		Name    string         `json:"name,omitempty"`
-		Path    string         `json:"path"`
-		Root    string         `json:"root,omitempty"`
-		DryRun  bool           `json:"dryRun"`
-		Changes []apply.Change `json:"changes,omitempty"`
-		Skipped []apply.Skip   `json:"skipped,omitempty"`
-		Error   string         `json:"error,omitempty"`
-	}
-	type multiResult struct {
-		CatalogPath string      `json:"catalogPath,omitempty"`
-		DryRun      bool        `json:"dryRun"`
-		Repos       []repoApply `json:"repos"`
-	}
-
 	isJSON := isJSONFormat(format)
-	multi := multiResult{CatalogPath: path, DryRun: dryRun}
+	multi := multiApplyJSON{CatalogPath: path, DryRun: dryRun}
 	exit := 0
 
 	for i, repo := range repos {
-		result, runErr := apply.Run(cat, repo.Path, apply.Options{
-			CatalogPath: path,
-			DryRun:      dryRun,
-		})
-		if runErr != nil {
+		entry, ok := applyOneRepo(cat, path, repo, dryRun, mode, format, isJSON, i > 0, stdout, stderr)
+		if !ok {
 			exit = 1
-			_, _ = fmt.Fprintf(stderr, "error: %s: %v\n", repo.Label, runErr)
-			if isJSON {
-				multi.Repos = append(multi.Repos, repoApply{
-					Name:   repo.Name,
-					Path:   repo.Path,
-					DryRun: dryRun,
-					Error:  runErr.Error(),
-				})
-			}
-			continue
 		}
 		if isJSON {
-			multi.Repos = append(multi.Repos, repoApply{
-				Name:    repo.Name,
-				Path:    repo.Path,
-				Root:    result.Root,
-				DryRun:  result.DryRun,
-				Changes: result.Changes,
-				Skipped: result.Skipped,
-			})
-			continue
-		}
-		if err := writeRepoHeader(stdout, repo, i > 0); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-		if err := apply.Write(stdout, result, format); err != nil {
-			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
+			multi.Repos = append(multi.Repos, entry)
 		}
 	}
 
@@ -544,6 +556,125 @@ func runApplyAll(catalogPath, format string, dryRun bool, stdout, stderr io.Writ
 		}
 	}
 	return exit
+}
+
+// applyOneRepo applies pins (and optional transport) to a single managed repo.
+// ok is false when apply or transport failed (or table write failed fatally —
+// fatal write errors still return ok=false and may leave partial output).
+func applyOneRepo(
+	cat *catalog.Catalog,
+	catalogPath string,
+	repo catalog.ResolvedRepo,
+	dryRun bool,
+	mode transport.Mode,
+	format string,
+	isJSON bool,
+	leadingBlank bool,
+	stdout, stderr io.Writer,
+) (repoApplyJSON, bool) {
+	result, runErr := apply.Run(cat, repo.Path, apply.Options{
+		CatalogPath: catalogPath,
+		DryRun:      dryRun,
+	})
+	if runErr != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %s: %v\n", repo.Label, runErr)
+		return repoApplyJSON{Name: repo.Name, Path: repo.Path, DryRun: dryRun, Error: runErr.Error()}, false
+	}
+
+	tr, trErr := maybeDeliver(mode, result, catalogPath, dryRun)
+	if trErr != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %s: transport: %v\n", repo.Label, trErr)
+		if isJSON {
+			return repoApplyJSON{
+				Name: repo.Name, Path: repo.Path, Root: result.Root, DryRun: result.DryRun,
+				Changes: result.Changes, Skipped: result.Skipped, Error: trErr.Error(),
+			}, false
+		}
+		_ = writeRepoTable(stdout, repo, leadingBlank, result, nil, format)
+		return repoApplyJSON{}, false
+	}
+
+	if isJSON {
+		return repoApplyJSON{
+			Name: repo.Name, Path: repo.Path, Root: result.Root, DryRun: result.DryRun,
+			Changes: result.Changes, Skipped: result.Skipped, Transport: tr,
+		}, true
+	}
+	if err := writeRepoTable(stdout, repo, leadingBlank, result, tr, format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return repoApplyJSON{}, false
+	}
+	return repoApplyJSON{}, true
+}
+
+func maybeDeliver(mode transport.Mode, result *apply.Result, catalogPath string, dryRun bool) (*transport.Result, error) {
+	if mode == transport.ModeNone {
+		return nil, nil
+	}
+	tr, err := transport.Deliver(context.Background(), transport.Options{
+		Mode:        mode,
+		Root:        result.Root,
+		Changes:     result.Changes,
+		CatalogPath: catalogPath,
+		DryRun:      dryRun,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deliver: %w", err)
+	}
+	return tr, nil
+}
+
+func writeRepoTable(stdout io.Writer, repo catalog.ResolvedRepo, leadingBlank bool, result *apply.Result, tr *transport.Result, format string) error {
+	if err := writeRepoHeader(stdout, repo, leadingBlank); err != nil {
+		return err
+	}
+	return writeApplyWithTransport(stdout, result, tr, format)
+}
+
+// resolveTransportMode maps --pr/--commit flags to a transport mode.
+// Returns exit code 2 when both flags are set.
+func resolveTransportMode(doPR, doCommit bool, stderr io.Writer) (transport.Mode, int) {
+	if doPR && doCommit {
+		_, _ = fmt.Fprintln(stderr, "error: --pr and --commit are mutually exclusive")
+		return transport.ModeNone, 2
+	}
+	if doPR {
+		return transport.ModePR, 0
+	}
+	if doCommit {
+		return transport.ModeCommit, 0
+	}
+	return transport.ModeNone, 0
+}
+
+// applyJSON is the single-repo JSON shape when transport is requested.
+type applyJSON struct {
+	*apply.Result
+	Transport *transport.Result `json:"transport,omitempty"`
+}
+
+func writeApplyWithTransport(w io.Writer, result *apply.Result, tr *transport.Result, format string) error {
+	if tr == nil {
+		if err := apply.Write(w, result, format); err != nil {
+			return fmt.Errorf("write apply: %w", err)
+		}
+		return nil
+	}
+	if isJSONFormat(format) {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(applyJSON{Result: result, Transport: tr}); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
+	if err := apply.Write(w, result, format); err != nil {
+		return fmt.Errorf("write apply: %w", err)
+	}
+	if err := transport.Write(w, tr, format); err != nil {
+		return fmt.Errorf("write transport: %w", err)
+	}
+	return nil
 }
 
 func runCheckUpdates(args []string, stdout, stderr io.Writer) int {

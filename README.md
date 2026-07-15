@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** core pin loop, managed fleet `--all`, controlled bumps (`check-updates` / `propose-bump` / `approve-bump`) are available. PR apply is a follow-up ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** core pin loop, managed fleet `--all`, controlled bumps, and reviewable apply transport (`--pr` / `--commit`) are available. See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the MVP plan.
 
 ## Installation
 
@@ -89,19 +89,21 @@ gh actionpins diff
 # 4. Preview, then apply local rewrites
 gh actionpins apply --dry-run
 gh actionpins apply
-# review the diff, commit, open a PR yourself
+# optional transport (never force-pushes default branch):
+gh actionpins apply --commit   # local commit only
+gh actionpins apply --pr       # side branch + push + gh pr create
 
 # 5. Or operate the whole managed fleet (requires catalog.repos)
 gh actionpins scan  --all
 gh actionpins diff  --all
 gh actionpins apply --all --dry-run
-gh actionpins apply --all
+gh actionpins apply --all --pr
 
 # 6. Discover soak-gated bumps, then explicitly trust one
 gh actionpins check-updates
 gh actionpins propose-bump actions/checkout
 gh actionpins approve-bump actions/checkout   # only this writes the catalog
-# then apply --all to push pins into managed repos
+# then apply --all --pr to open reviewable pin PRs in managed repos
 ```
 
 **Policy choices (document them for your fleet):**
@@ -192,15 +194,22 @@ Rewrite mismatched or unpinned **catalogued** workflow `uses:` lines to the trus
 gh actionpins apply --dry-run
 gh actionpins apply --dry-run --catalog examples/catalog.yaml
 
-# Apply to the current repository
+# Apply to the current repository (files only)
 gh actionpins apply --catalog examples/catalog.yaml
+
+# Local-commit mode (direct-contribution checkouts; no push)
+gh actionpins apply --commit --catalog examples/catalog.yaml
+
+# Reviewable PR via gh (side branch; never force-pushes default branch)
+gh actionpins apply --pr --catalog examples/catalog.yaml
+gh actionpins apply --dry-run --pr --catalog examples/catalog.yaml
 
 # Another checkout + machine-readable plan
 gh actionpins apply --dry-run --format json /path/to/repo
 
 # All managed repos from catalog.repos (still discovery-based per repo)
 gh actionpins apply --all --dry-run --catalog examples/catalog.yaml
-gh actionpins apply --all --catalog examples/catalog.yaml
+gh actionpins apply --all --pr --catalog examples/catalog.yaml
 ```
 
 | Target form | When |
@@ -213,9 +222,37 @@ gh actionpins apply --all --catalog examples/catalog.yaml
 - Only actions present in the catalog with status `mismatch` or `unpinned` are rewritten
 - Already-correct pins (`ok`) and `unknown` actions are skipped (reported in the summary)
 - Line-oriented edits preserve surrounding YAML (indentation, step names, `with:` blocks)
-- Local files only — no force-push, no PR API (see roadmap)
+- Default is local file updates only
 
-Table output lists `FILE`, `LINE`, `ACTION`, `OLD`, `NEW` and ends with `summary: applied|would apply N change(s); skipped unknown=… ok=…`.
+### Apply transport (`--pr` / `--commit`)
+
+Pins should land as **reviewable** changes, never as a silent mutation of the default branch.
+
+| Flag | Effect |
+|------|--------|
+| _(none)_ | Rewrite files on disk only |
+| `--commit` | Stage only rewritten files and create a **local** git commit (no push) |
+| `--pr` | Create a side branch, commit, `git push -u origin HEAD` (no `--force`), then `gh pr create` against the default branch |
+
+`--pr` and `--commit` are mutually exclusive. Combined with `--dry-run`, transport is planned only (no git/gh writes).
+
+**Conventions:**
+
+| Item | Value |
+|------|--------|
+| Branch (PR mode) | `actionpins/apply-YYYYMMDD-HHMMSS` (UTC) |
+| Commit / PR title | `chore: pin GitHub Actions to trusted catalog SHAs` |
+| Commit body | Lists rewritten pins + catalog path; notes that the default branch is never force-pushed |
+| Staged paths | Only files rewritten by apply (unrelated dirty files stay unstaged) |
+
+**Safety:**
+
+- Never force-pushes; never pushes commits onto the default branch via the PR path
+- `--pr` fails clearly if `gh auth` is missing or the checkout has no GitHub repo context (`gh repo view`)
+- Prefer a **clean checkout of the default branch** before `--pr` so the PR is a single pin commit
+- Use `--commit` when the repo is checked out for direct contribution and you will push/review yourself
+
+Table output lists `FILE`, `LINE`, `ACTION`, `OLD`, `NEW` and ends with `summary: applied|would apply N change(s); skipped unknown=… ok=…`. When transport runs, a `transport: …` line (or JSON `transport` object) follows.
 
 ## Managed fleet (`--all`)
 
@@ -331,4 +368,4 @@ See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the full M
 | Controlled bumps (`check-updates` / `propose-bump`) | Done ([#8](https://github.com/jaeyeom/gh-actionpins/issues/8)) |
 | Catalog trust write (`approve-bump`) | Done ([#9](https://github.com/jaeyeom/gh-actionpins/issues/9)) |
 | README install + walkthrough | Done ([#11](https://github.com/jaeyeom/gh-actionpins/issues/11)) |
-| Apply via reviewable PR (`gh`) | Planned ([#10](https://github.com/jaeyeom/gh-actionpins/issues/10)) |
+| Apply via reviewable PR (`gh`) | Done ([#10](https://github.com/jaeyeom/gh-actionpins/issues/10)) |

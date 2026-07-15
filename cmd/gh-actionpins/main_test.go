@@ -323,6 +323,50 @@ func TestRunApplyTooManyArgs(t *testing.T) {
 	}
 }
 
+func TestRunApplyPRAndCommitMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "--pr", "--commit"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunApplyCommitDryRunNoGitRepo(t *testing.T) {
+	t.Parallel()
+	example := filepath.Join("..", "..", "examples", "catalog.yaml")
+	if _, err := os.Stat(example); err != nil {
+		t.Fatalf("example catalog missing: %v", err)
+	}
+	dir, _, _ := writeApplyFixture(t)
+	// dir is not a git repo — dry-run --commit should fail safely after planning.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"apply", "--catalog", example, "--dry-run", "--commit", dir}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "transport:") {
+		t.Errorf("stderr = %q, want transport error", stderr.String())
+	}
+}
+
+func TestRunApplyHelpMentionsTransport(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("help = %d", code)
+	}
+	out := stdout.String()
+	for _, needle := range []string{"--pr", "--commit", "actionpins/apply-", "never force-push"} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("help missing %q", needle)
+		}
+	}
+}
+
 func TestRunApplyMissingCatalog(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer

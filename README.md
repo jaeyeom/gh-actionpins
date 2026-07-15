@@ -297,10 +297,13 @@ gh actionpins approve-bump --format json checkout
 |---------|------|---------|
 | `check-updates` | `0` | No eligible updates (current / too-new / blocked only) |
 | `check-updates` | `1` | At least one `available` update, or a failure |
+| `check-updates` | `2` | Invalid usage or flags |
 | `propose-bump` | `0` | Proposal printed |
 | `propose-bump` | `1` | Refused (too new / blocked / none) or failure |
+| `propose-bump` | `2` | Invalid usage or flags |
 | `approve-bump` | `0` | Catalog pin updated |
 | `approve-bump` | `1` | Refused (policy / lookup) or failure |
+| `approve-bump` | `2` | Invalid usage or flags |
 
 ## Development
 
@@ -327,4 +330,5 @@ See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the full M
 | Managed repos + `scan`/`diff`/`apply --all` | Done ([#7](https://github.com/jaeyeom/gh-actionpins/issues/7)) |
 | Controlled bumps (`check-updates` / `propose-bump`) | Done ([#8](https://github.com/jaeyeom/gh-actionpins/issues/8)) |
 | Catalog trust write (`approve-bump`) | Done ([#9](https://github.com/jaeyeom/gh-actionpins/issues/9)) |
+| README install + walkthrough | Done ([#11](https://github.com/jaeyeom/gh-actionpins/issues/11)) |
 | Apply via reviewable PR (`gh`) | Planned ([#10](https://github.com/jaeyeom/gh-actionpins/issues/10)) |

@@ -4,7 +4,7 @@ Multi-repo GitHub Actions pin catalog: trusted versions with SHAs, selective app
 
 `gh-actionpins` is a [GitHub CLI](https://cli.github.com/) extension. A central catalog of approved action versions (commit SHAs) is the source of truth. You scan and diff real workflow usage, apply pins only to actions each repo already uses, and bump the catalog through an explicit soak/approve path—not day-0 auto-trust of `latest`.
 
-> **Status:** core pin loop, managed fleet `--all`, and controlled update discovery (`check-updates` / `propose-bump`) are available. Catalog write (`approve-bump`) and PR apply are follow-ups ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
+> **Status:** core pin loop, managed fleet `--all`, controlled bumps (`check-updates` / `propose-bump` / `approve-bump`) are available. PR apply is a follow-up ([#1](https://github.com/jaeyeom/gh-actionpins/issues/1)).
 
 ## Installation
 
@@ -97,10 +97,11 @@ gh actionpins diff  --all
 gh actionpins apply --all --dry-run
 gh actionpins apply --all
 
-# 6. Discover soak-gated bumps (does not write the catalog)
+# 6. Discover soak-gated bumps, then explicitly trust one
 gh actionpins check-updates
 gh actionpins propose-bump actions/checkout
-# then approve-bump (when available) before apply --all
+gh actionpins approve-bump actions/checkout   # only this writes the catalog
+# then apply --all to push pins into managed repos
 ```
 
 **Policy choices (document them for your fleet):**
@@ -247,9 +248,9 @@ gh actionpins apply --all
 
 Profiles (action subsets per repo) are deferred; discovery-based inventory already avoids forcing unused actions.
 
-## Check updates / propose bump
+## Check updates / propose bump / approve bump
 
-Discover newer upstream releases without writing the catalog. Network access uses `gh api` (inherits your `gh` authentication).
+Discover newer upstream releases, review a proposal, then **explicitly** write the catalog. Network access uses `gh api` (inherits your `gh` authentication). Only `approve-bump` mutates trusted pins.
 
 ```bash
 # Compare every catalog entry to upstream tags/releases
@@ -260,12 +261,18 @@ gh actionpins check-updates --format json
 # Propose one bump (refused when younger than min_age; flags before action)
 gh actionpins propose-bump actions/checkout
 gh actionpins propose-bump --format json checkout   # short name if unique
+
+# Trust a pin (writes version, sha, approved_at into the catalog)
+gh actionpins approve-bump actions/checkout
+# Explicit pin (bypasses min_age; still the only trust write):
+gh actionpins approve-bump --version v5.0.0 --sha <40-char-hex> --allow-major actions/checkout
+gh actionpins approve-bump --format json checkout
 ```
 
 | Status (`check-updates`) | Meaning |
 |--------------------------|---------|
 | `current` | No newer version under `prefer` |
-| `available` | Newer version meets `prefer` **and** `min_age` (eligible for propose) |
+| `available` | Newer version meets `prefer` **and** `min_age` (eligible for propose/approve) |
 | `too-new` | Newer version exists but soak time not met (or publish time unknown with `min_age` set) |
 | `blocked` | Newer version exists but excluded by `prefer` (e.g. major jump with `same-major`) |
 | `error` | Lookup/parse failure for that action |
@@ -274,12 +281,15 @@ gh actionpins propose-bump --format json checkout   # short name if unique
 
 - Floating channels (`latest`, `main`, …) are never treated as proposable versions
 - `propose-bump` resolves tag → full commit SHA and prints a reviewable proposal only
-- The catalog is **not** modified; `approve-bump` (separate command) is the trust write
-- `policy.prefer` limits:
-  - `major` — any newer stable tag is a candidate
+- `approve-bump` is the **only** command that writes the catalog (`version`, `sha`, `approved_at`)
+- Default `approve-bump <action>` uses the same eligible proposal as `propose-bump` (min_age gated)
+- Explicit `--version` + `--sha` trusts a pin you supply (manual gate; bypasses min_age)
+- `policy.prefer` limits discovery/proposal candidates:
+  - `major` — any newer stable tag is a candidate (major jumps allowed on approve)
   - `same-major` — only the same major as the catalog pin
   - `patch-only` — only the same major.minor (patch bumps)
-- Major jumps still need an explicit approve path later; discovery never auto-trusts
+- Major jumps when prefer is `same-major` or `patch-only` require `--allow-major` on approve (no silent major trust)
+- YAML comments and unrelated entries are preserved as practical when writing
 
 **Exit codes:**
 
@@ -289,6 +299,8 @@ gh actionpins propose-bump --format json checkout   # short name if unique
 | `check-updates` | `1` | At least one `available` update, or a failure |
 | `propose-bump` | `0` | Proposal printed |
 | `propose-bump` | `1` | Refused (too new / blocked / none) or failure |
+| `approve-bump` | `0` | Catalog pin updated |
+| `approve-bump` | `1` | Refused (policy / lookup) or failure |
 
 ## Development
 
@@ -314,5 +326,5 @@ See [issue #1](https://github.com/jaeyeom/gh-actionpins/issues/1) for the full M
 | Local `scan` / `diff` / `apply` | Done ([#4](https://github.com/jaeyeom/gh-actionpins/issues/4)–[#6](https://github.com/jaeyeom/gh-actionpins/issues/6)) |
 | Managed repos + `scan`/`diff`/`apply --all` | Done ([#7](https://github.com/jaeyeom/gh-actionpins/issues/7)) |
 | Controlled bumps (`check-updates` / `propose-bump`) | Done ([#8](https://github.com/jaeyeom/gh-actionpins/issues/8)) |
-| Catalog trust write (`approve-bump`) | Planned ([#9](https://github.com/jaeyeom/gh-actionpins/issues/9)) |
+| Catalog trust write (`approve-bump`) | Done ([#9](https://github.com/jaeyeom/gh-actionpins/issues/9)) |
 | Apply via reviewable PR (`gh`) | Planned ([#10](https://github.com/jaeyeom/gh-actionpins/issues/10)) |

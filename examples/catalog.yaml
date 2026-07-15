@@ -7,6 +7,9 @@
 #   gh actionpins diff  --catalog examples/catalog.yaml
 #   gh actionpins apply --catalog examples/catalog.yaml --dry-run
 #   gh actionpins apply --catalog examples/catalog.yaml
+#   gh actionpins check-updates --catalog examples/catalog.yaml
+#   gh actionpins propose-bump --catalog examples/catalog.yaml actions/checkout
+#   gh actionpins approve-bump --catalog examples/catalog.yaml actions/checkout
 #
 # Fleet (--all) uses the optional repos: list below:
 #   gh actionpins scan  --all --catalog ~/.config/actionpins/catalog.yaml

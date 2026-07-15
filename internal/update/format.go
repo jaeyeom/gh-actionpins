@@ -45,6 +45,21 @@ func WriteProposal(w io.Writer, p *Proposal, format string) error {
 	}
 }
 
+// WriteApproval formats an approve-bump result.
+func WriteApproval(w io.Writer, a *Approval, format string) error {
+	if a == nil {
+		return fmt.Errorf("approval is nil")
+	}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", FormatTable:
+		return writeApprovalText(w, a)
+	case FormatJSON:
+		return writeJSON(w, a)
+	default:
+		return fmt.Errorf("unknown format %q (want %q or %q)", format, FormatTable, FormatJSON)
+	}
+}
+
 func writeCheckTable(w io.Writer, result *CheckResult) error {
 	if len(result.Entries) == 0 {
 		if _, err := fmt.Fprintln(w, "No catalog actions."); err != nil {
@@ -128,6 +143,36 @@ func writeProposalText(w io.Writer, p *Proposal) error {
 	)
 	if err != nil {
 		return fmt.Errorf("write proposal: %w", err)
+	}
+	return nil
+}
+
+func writeApprovalText(w io.Writer, a *Approval) error {
+	major := "no"
+	if a.MajorJump {
+		major = "yes"
+	}
+	_, err := fmt.Fprintf(w, `approved bump (catalog updated)
+  action:      %s
+  from:        %s (%s)
+  to:          %s (%s)
+  approved_at: %s
+  major_jump:  %s
+  source:      %s
+  catalog:     %s
+  note:        %s
+`,
+		a.Action,
+		a.FromVersion, a.FromSHA,
+		a.ToVersion, a.ToSHA,
+		a.ApprovedAt,
+		major,
+		a.Source,
+		a.CatalogPath,
+		a.Note,
+	)
+	if err != nil {
+		return fmt.Errorf("write approval: %w", err)
 	}
 	return nil
 }

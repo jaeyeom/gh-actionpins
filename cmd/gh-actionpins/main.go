@@ -37,13 +37,11 @@ Commands:
   apply [path]           Rewrite uses: to catalog SHA + version comment
   check-updates          Compare catalog pins to upstream releases
   propose-bump <action>  Propose a catalog bump (no write; min_age gated)
+  approve-bump <action>  Write trusted version + SHA into the catalog
   help                   Show this help
 
 Flags:
   -h, --help    Show this help
-
-Future commands (see repo issues):
-  approve-bump
 
 Catalog:
   Default path: ~/.config/actionpins/catalog.yaml (OS user config dir)
@@ -84,14 +82,20 @@ Apply:
   --all iterates catalog.repos (still discovery-based per repo).
   Output: table (default) or JSON (--format).
 
-Check-updates / propose-bump:
+Check-updates / propose-bump / approve-bump:
   Discover newer upstream releases via the GitHub API (gh api; uses your
   gh auth). Never auto-trusts "latest" or day-0 releases.
   policy.min_age: soak time before a release is eligible to propose.
   policy.prefer: major | same-major | patch-only (filters candidates).
   propose-bump prints a reviewable proposal only — it does not write the
-  catalog (see approve-bump). Short action names resolve when unique
+  catalog. approve-bump is the only command that mutates trusted pins
+  (version, sha, approved_at). Short action names resolve when unique
   (e.g. checkout → actions/checkout).
+  approve-bump modes:
+    (default)  use the same eligible proposal as propose-bump (min_age gated)
+    --version + --sha  trust an explicit pin (manual gate; bypasses min_age)
+  Major jumps when prefer is same-major or patch-only require --allow-major
+  (use with explicit --version/--sha). prefer=major allows major jumps.
   Exit codes (check-updates):
     0  no eligible updates (or only current/too-new/blocked)
     1  at least one available update, or lookup/catalog failure
@@ -99,6 +103,10 @@ Check-updates / propose-bump:
   Exit codes (propose-bump):
     0  proposal printed
     1  refused (too new / blocked / none) or failure
+    2  invalid usage/flags
+  Exit codes (approve-bump):
+    0  catalog updated
+    1  refused (policy / lookup) or failure
     2  invalid usage/flags
 
 Examples:
@@ -121,6 +129,8 @@ Examples:
   gh actionpins check-updates --format json
   gh actionpins propose-bump actions/checkout
   gh actionpins propose-bump --format json checkout
+  gh actionpins approve-bump actions/checkout
+  gh actionpins approve-bump --version v5.0.0 --sha <40hex> --allow-major checkout
 `
 
 func main() {
@@ -148,6 +158,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCheckUpdates(args[1:], stdout, stderr)
 	case "propose-bump":
 		return runProposeBump(args[1:], stdout, stderr)
+	case "approve-bump":
+		return runApproveBump(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 1
@@ -602,6 +614,46 @@ func runProposeBump(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := update.WriteProposal(stdout, proposal, *format); err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runApproveBump(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("approve-bump", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	catalogPath := fs.String("catalog", "", "path to catalog YAML (default: user config actionpins/catalog.yaml)")
+	format := fs.String("format", update.FormatTable, "output format: table or json")
+	version := fs.String("version", "", "explicit version tag to trust (requires --sha)")
+	sha := fs.String("sha", "", "explicit 40-char commit SHA to trust (requires --version)")
+	allowMajor := fs.Bool("allow-major", false, "allow major version jump when prefer is same-major or patch-only")
+	includePrerelease := fs.Bool("include-prerelease", false, "include GitHub pre-releases when resolving a proposal")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: gh actionpins approve-bump <action> [--catalog path] [--version ver --sha hex] [--allow-major] [--format table|json]")
+		return 2
+	}
+
+	path, cat, code := loadCatalog(*catalogPath, stderr)
+	if code != 0 {
+		return code
+	}
+
+	approval, err := update.ApproveBump(context.Background(), cat, fs.Arg(0), update.ApproveOptions{
+		CatalogPath:       path,
+		Version:           *version,
+		SHA:               *sha,
+		AllowMajor:        *allowMajor,
+		IncludePrerelease: *includePrerelease,
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := update.WriteApproval(stdout, approval, *format); err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}

@@ -1,6 +1,7 @@
-// Package update discovers newer action releases and proposes catalog bumps
-// without writing the catalog. Soak policy (min_age) and prefer filters gate
-// eligibility so day-0 "latest" is never auto-trusted.
+// Package update discovers newer action releases, proposes catalog bumps, and
+// performs the explicit approve-bump trust write. Soak policy (min_age) and
+// prefer filters gate discovery so day-0 "latest" is never auto-trusted;
+// only ApproveBump mutates the catalog.
 package update
 
 import (

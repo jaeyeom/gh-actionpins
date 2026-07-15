@@ -589,9 +589,87 @@ func TestRunHelpListsUpdateCommands(t *testing.T) {
 		t.Fatalf("code = %d", code)
 	}
 	out := stdout.String()
-	for _, needle := range []string{"check-updates", "propose-bump", "min_age"} {
+	for _, needle := range []string{"check-updates", "propose-bump", "approve-bump", "min_age"} {
 		if !strings.Contains(out, needle) {
 			t.Errorf("help missing %q", needle)
 		}
+	}
+}
+
+func TestRunApproveBumpExplicit(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "catalog.yaml")
+	content := `actions:
+  actions/checkout:
+    version: v4.0.0
+    sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    approved_at: 2026-01-01
+policy:
+  min_age: 7d
+  prefer: same-major
+  require_comment: true
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Major jump without --allow-major must refuse when prefer=same-major.
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"approve-bump",
+		"--catalog", path,
+		"--version", "v5.0.0",
+		"--sha", "dddddddddddddddddddddddddddddddddddddddd",
+		"actions/checkout",
+	}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("major without allow = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "major jump") {
+		t.Errorf("stderr = %q, want major jump", stderr.String())
+	}
+
+	// With --allow-major, catalog is updated.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"approve-bump",
+		"--catalog", path,
+		"--version", "v5.0.0",
+		"--sha", "dddddddddddddddddddddddddddddddddddddddd",
+		"--allow-major",
+		"--format", "json",
+		"checkout",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("approve-bump = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"toVersion": "v5.0.0"`) {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	// Same-major bump without flag succeeds.
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{
+		"approve-bump",
+		"--catalog", path,
+		"--version", "v5.1.0",
+		"--sha", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		"actions/checkout",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("same-major approve = %d, stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "approved bump") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+
+	// Usage error: missing action.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"approve-bump", "--catalog", path}, &stdout, &stderr); code != 2 {
+		t.Errorf("missing action = %d, want 2", code)
 	}
 }
